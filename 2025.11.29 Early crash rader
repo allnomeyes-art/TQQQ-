@@ -1,0 +1,265 @@
+//@version=6
+indicator('GPT Market Navigator v3 (Early Crash Radar)', overlay = true)
+
+// ───────────────────────────────
+// 1. 심볼 입력
+// ───────────────────────────────
+/// 메인 심볼: 현재 차트
+symMain = syminfo.tickerid
+
+// 보조 심볼 입력
+symQQQ  = input.symbol('NASDAQ:QQQ', 'QQQ (벤치마크)')
+symVIX  = input.symbol('CBOE:VIX',   'VIX')
+symHYG  = input.symbol('AMEX:HYG',   'HYG (High Yield)')
+symLQD  = input.symbol('AMEX:LQD',   'LQD (IG Credit)')
+
+// 초선행 폭락 레이더 전용 심볼
+symPCR  = input.symbol('CBOE:PUTCALL', 'Put/Call Ratio (TOTAL)')
+symMOVE = input.symbol('BAML:MOVE',    'MOVE Index')
+symVVIX = input.symbol('CBOE:VVIX',    'VVIX (VIX Volatility)')
+
+// 현재 차트 타임프레임 데이터 (1번만 선언!!!)
+tClose = request.security(symMain, timeframe.period, close)
+qClose = request.security(symQQQ, timeframe.period, close)
+vix    = request.security(symVIX,  timeframe.period, close)
+hyg    = request.security(symHYG,  timeframe.period, close)
+lqd    = request.security(symLQD,  timeframe.period, close)
+
+// 초선행 지표 데이터 (일봉 기준)
+pcr  = request.security(symPCR,  'D', close)
+move = request.security(symMOVE, 'D', close)
+vvix = request.security(symVVIX, 'D', close)
+
+// 현재 심볼 이름 표시용
+assetName = syminfo.ticker
+
+// ───────────────────────────────
+// 2. Market Crash Score (기존 v2 로직)
+// ───────────────────────────────
+
+// (1) VIX Gap (VIX / 50MA)
+vixMa   = ta.sma(vix, 50)
+vixGap  = vixMa == 0.0 ? 1.0 : vix / vixMa
+// 1.10 미만 0점, 1.10~1.30 1점, 1.30 이상 2점
+vixScore = vixGap < 1.10 ? 0.0 : vixGap < 1.30 ? 1.0 : 2.0
+
+// (2) HYG / LQD 신용 스프레드
+spread = (hyg / lqd - 1.0) * 100.0
+// -1% 이상 0점, -1~-3% 1점, -3% 이하 2점
+spreadScore = spread > -1.0 ? 0.0 : spread > -3.0 ? 1.0 : 2.0
+
+// (3) 메인 심볼 30일 드로다운
+ddLen    = input.int(30, '드로다운 기간 (메인 심볼 기준)')
+hh       = ta.highest(tClose, ddLen)
+drawdown = (tClose - hh) / hh * 100.0
+// -10% 이내 0점, -10~-25% 1점, -25% 이하 2점
+ddScore = drawdown > -10.0 ? 0.0 : drawdown > -25.0 ? 1.0 : 2.0
+
+// (4) QQQ 50EMA 기울기
+qqEma   = ta.ema(qClose, 50)
+qqSlope = qqEma - qqEma[1]
+// 0 이상 0점, 완만한 하락(약 -0.1%/봉) 1점, 강한 하락 2점
+trendScore = qqSlope > 0.0 ? 0.0 : qqSlope > qqEma * -0.001 ? 1.0 : 2.0
+
+// (5) VIX 변화율 (3봉 기준)
+vixChange = (vix - vix[3]) / vix[3] * 100.0
+// +10% 미만 0점, +10~30% 1점, +30% 이상 2점
+volScore = vixChange < 10.0 ? 0.0 : vixChange < 30.0 ? 1.0 : 2.0
+
+// Crash % (기존 v2)
+totalScore = vixScore + spreadScore + ddScore + trendScore + volScore
+crashProb  = math.min(totalScore / 10.0 * 100.0, 100.0)
+
+// ───────────────────────────────
+// 2-1. Macro Stress (경제/시장 스트레스)
+// ───────────────────────────────
+macroRaw =
+      vixScore    * 0.30 +
+      spreadScore * 0.30 +
+      ddScore     * 0.20 +
+      trendScore  * 0.20
+
+macroStress = math.min(macroRaw / 2.0 * 100.0, 100.0)
+
+// ───────────────────────────────
+// 2-2. v3 초선행 폭락 레이더 (MOVE + VVIX + PCR)
+// ───────────────────────────────
+// ① Put/Call Ratio (TOTAL)
+// 0.9 이하 0점(안정), 0.9~1.1 1점(경계), 1.1 이상 2점(헤지/공포)
+pcrScore = pcr <= 0.9 ? 0.0 : pcr <= 1.1 ? 1.0 : 2.0
+
+// ② MOVE Index (채권 변동성)
+// 90 이하 0점, 90~120 1점, 120 이상 2점
+moveScore = move < 90.0 ? 0.0 : move < 120.0 ? 1.0 : 2.0
+
+// ③ VVIX (VIX 변동성)
+// 90 이하 0점, 90~120 1점, 120 이상 2점
+vvixScore = vvix < 90.0 ? 0.0 : vvix < 120.0 ? 1.0 : 2.0
+
+// v3 Early Crash Score : 초선행 3개 + 크레딧 + VIX 점프  → 5개(0~2점)
+// 0~10 → 0~100%
+earlyScoreRaw  = pcrScore + moveScore + vvixScore + spreadScore + volScore
+earlyCrashProb = math.min(earlyScoreRaw / 10.0 * 100.0, 100.0)
+
+// ───────────────────────────────
+// 2-3. Regime 정의
+// ───────────────────────────────
+
+// 포지션 관점
+string regime = ''
+if crashProb < 30.0
+    regime := 'GREEN (Risk-On)'
+else if crashProb < 60.0
+    regime := 'YELLOW (Neutral)'
+else
+    regime := 'RED (Risk-Off)'
+
+// 색상 (Regime Color)
+color regimeColor = na
+if crashProb < 30.0
+    regimeColor := color.new(color.green, 0)
+else if crashProb < 60.0
+    regimeColor := color.new(color.orange, 0)
+else
+    regimeColor := color.new(color.red, 0)
+
+// Macro Regime (환경)
+string macroRegime = ''
+if macroStress < 30.0
+    macroRegime := '정상 (평온)'
+else if macroStress < 60.0
+    macroRegime := '경계 (긴장)'
+else
+    macroRegime := '위기 (High Stress)'
+
+// Early Crash Regime (초선행 전용)
+string earlyRegime = ''
+if earlyCrashProb < 30.0
+    earlyRegime := '정상'
+else if earlyCrashProb < 60.0
+    earlyRegime := '선행 경고'
+else
+    earlyRegime := '초선행 위험'
+
+// ───────────────────────────────
+// 3. 메인 심볼 추세 & 매수/매도 신호
+// ───────────────────────────────
+fastLen = input.int(10, 'Fast EMA (메인 심볼)')
+slowLen = input.int(30, 'Slow EMA (메인 심볼)')
+
+fastEMA = ta.ema(tClose, fastLen)
+slowEMA = ta.ema(tClose, slowLen)
+
+tUp   = fastEMA > slowEMA
+tDown = fastEMA < slowEMA
+
+strongBuy  = ta.crossover(fastEMA, slowEMA) and crashProb < 30.0 and earlyCrashProb < 40.0
+buySignal  = ta.crossover(fastEMA, slowEMA) and crashProb < 60.0 and earlyCrashProb < 60.0
+sellSignal = ta.crossunder(fastEMA, slowEMA) or (tDown and (crashProb >= 60.0 or earlyCrashProb >= 60.0))
+
+// 시그널 텍스트
+string tSignal = ''
+if strongBuy
+    tSignal := 'RISK ON (강한 매수)'
+else if buySignal
+    tSignal := 'LIGHT LONG (분할진입)'
+else if sellSignal
+    tSignal := 'RISK OFF (방어/매도)'
+else
+    tSignal := 'NEUTRAL / 대기'
+
+// ───────────────────────────────
+// 4. 시각화: EMA + 배경 + 화살표
+// ───────────────────────────────
+plot(fastEMA, color = color.aqua,   title = 'Fast EMA')
+plot(slowEMA, color = color.orange, title = 'Slow EMA')
+
+bgcolor(tUp ? color.new(color.green, 92) :
+       tDown ? color.new(color.red,   92) : na)
+
+// BUY+ (강한 매수)
+plotshape(strongBuy,
+     title     = 'Strong Buy',
+     style     = shape.triangleup,
+     location  = location.belowbar,
+     color     = color.lime,
+     size      = size.large,
+     text      = 'BUY+')
+
+// BUY (일반 매수)
+plotshape(buySignal and not strongBuy,
+     title     = 'Buy',
+     style     = shape.triangleup,
+     location  = location.belowbar,
+     color     = color.green,
+     size      = size.small,
+     text      = 'BUY')
+
+// SELL (매도)
+plotshape(sellSignal,
+     title     = 'Sell',
+     style     = shape.triangledown,
+     location  = location.abovebar,
+     color     = color.red,
+     size      = size.small,
+     text      = 'SELL')
+
+// Crash% 라인
+plot(crashProb,      title = 'Crash Probability %',       color = regimeColor,          linewidth = 2)
+// Early Crash% 라인 (초선행 전용)
+plot(earlyCrashProb, title = 'Early Crash Probability %', color = color.new(color.red, 40), linewidth = 2, style = plot.style_linebr)
+
+// ───────────────────────────────
+// 5. 대시보드 테이블
+// ───────────────────────────────
+var table dash = table.new(position.top_right, 2, 10, border_width = 1)
+
+// 컴포넌트 문자열용 변수 (초기화)
+string compEarly = ''
+
+if barstate.islast
+    // 헤더
+    table.cell(dash, 0, 0, 'Metric')
+    table.cell(dash, 1, 0, 'Value')
+
+    // Regime
+    table.cell(dash, 0, 1, 'Regime')
+    table.cell(dash, 1, 1, regime, bgcolor = regimeColor)
+
+    // Crash %
+    table.cell(dash, 0, 2, 'Crash %')
+    table.cell(dash, 1, 2, str.tostring(crashProb, '#.0') + '%', text_color = regimeColor)
+
+    // Early Crash %
+    table.cell(dash, 0, 3, 'Early Crash % (v3)')
+    table.cell(dash, 1, 3, str.tostring(earlyCrashProb, '#.0') + '%')
+
+    // Macro Stress %
+    table.cell(dash, 0, 4, 'Macro Stress %')
+    table.cell(dash, 1, 4, str.tostring(macroStress, '#.0') + '%')
+
+    // Macro Regime
+    table.cell(dash, 0, 5, 'Macro Regime')
+    table.cell(dash, 1, 5, macroRegime)
+
+    // Early Regime
+    table.cell(dash, 0, 6, 'Early Regime')
+    table.cell(dash, 1, 6, earlyRegime)
+
+    // 메인 심볼 Trend
+    table.cell(dash, 0, 7, assetName + ' Trend')
+    table.cell(dash, 1, 7, tUp ? 'UP' : tDown ? 'DOWN' : 'FLAT')
+
+    // 메인 심볼 Signal
+    table.cell(dash, 0, 8, assetName + ' Signal')
+    table.cell(dash, 1, 8, tSignal, bgcolor = color.new(color.blue, 60))
+
+/// 초선행 컴포넌트 요약 문자열 생성
+compEarly := 'PCR '  + str.tostring(pcrScore, '#.0') +
+             ' / MOVE ' + str.tostring(moveScore, '#.0') +
+             ' / VVIX ' + str.tostring(vvixScore, '#.0') +
+             ' / CR '   + str.tostring(spreadScore, '#.0') +
+             ' / VIXΔ ' + str.tostring(volScore, '#.0')
+             
+table.cell(dash, 0, 9, 'Early Components')
+table.cell(dash, 1, 9, compEarly)
