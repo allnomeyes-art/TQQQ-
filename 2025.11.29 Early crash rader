@@ -9,26 +9,26 @@ symMain = syminfo.tickerid
 
 // 보조 심볼 입력
 symQQQ  = input.symbol('NASDAQ:QQQ', 'QQQ (벤치마크)')
-symVIX  = input.symbol('CBOE:VIX',   'VIX')
+symVIX  = input.symbol('TVC:VIX',    'VIX')
 symHYG  = input.symbol('AMEX:HYG',   'HYG (High Yield)')
 symLQD  = input.symbol('AMEX:LQD',   'LQD (IG Credit)')
 
-// 초선행 폭락 레이더 전용 심볼
-symPCR  = input.symbol('CBOE:PUTCALL', 'Put/Call Ratio (TOTAL)')
-symMOVE = input.symbol('BAML:MOVE',    'MOVE Index')
-symVVIX = input.symbol('CBOE:VVIX',    'VVIX (VIX Volatility)')
+// 초선행 폭락 레이더 전용 심볼 (TradingView에서 실제 존재하는 심볼들)
+symPCR  = input.symbol('NASDAQ:PC',  'Put/Call Ratio (TOTAL PC)')
+symMOVE = input.symbol('TVC:MOVE',   'MOVE Index')
+symVVIX = input.symbol('CBOE:VVIX',  'VVIX (VIX Volatility)')
 
 // 현재 차트 타임프레임 데이터 (1번만 선언!!!)
 tClose = request.security(symMain, timeframe.period, close)
-qClose = request.security(symQQQ, timeframe.period, close)
-vix    = request.security(symVIX,  timeframe.period, close)
-hyg    = request.security(symHYG,  timeframe.period, close)
-lqd    = request.security(symLQD,  timeframe.period, close)
+qClose = request.security(symQQQ,  timeframe.period, close)
+vix    = request.security(symVIX,   timeframe.period, close)
+hyg    = request.security(symHYG,   timeframe.period, close)
+lqd    = request.security(symLQD,   timeframe.period, close)
 
 // 초선행 지표 데이터 (일봉 기준)
-pcr  = request.security(symPCR,  'D', close)
-move = request.security(symMOVE, 'D', close)
-vvix = request.security(symVVIX, 'D', close)
+pcr   = request.security(symPCR,  'D', close)   // TOTAL Put/Call (PC)
+move  = request.security(symMOVE, 'D', close)   // MOVE Index
+vvix  = request.security(symVVIX, 'D', close)   // VVIX
 
 // 현재 심볼 이름 표시용
 assetName = syminfo.ticker
@@ -38,8 +38,8 @@ assetName = syminfo.ticker
 // ───────────────────────────────
 
 // (1) VIX Gap (VIX / 50MA)
-vixMa   = ta.sma(vix, 50)
-vixGap  = vixMa == 0.0 ? 1.0 : vix / vixMa
+vixMa  = ta.sma(vix, 50)
+vixGap = vixMa == 0.0 ? 1.0 : vix / vixMa
 // 1.10 미만 0점, 1.10~1.30 1점, 1.30 이상 2점
 vixScore = vixGap < 1.10 ? 0.0 : vixGap < 1.30 ? 1.0 : 2.0
 
@@ -84,11 +84,11 @@ macroStress = math.min(macroRaw / 2.0 * 100.0, 100.0)
 // ───────────────────────────────
 // 2-2. v3 초선행 폭락 레이더 (MOVE + VVIX + PCR)
 // ───────────────────────────────
-// ① Put/Call Ratio (TOTAL)
+// ① Put/Call Ratio (TOTAL PC 기준)
 // 0.9 이하 0점(안정), 0.9~1.1 1점(경계), 1.1 이상 2점(헤지/공포)
-pcrScore = pcr <= 0.9 ? 0.0 : pcr <= 1.1 ? 1.0 : 2.0
+pcrScore = pcr <= 0.90 ? 0.0 : pcr <= 1.10 ? 1.0 : 2.0
 
-// ② MOVE Index (채권 변동성)
+// ② MOVE Index (채권 변동성 지수)
 // 90 이하 0점, 90~120 1점, 120 이상 2점
 moveScore = move < 90.0 ? 0.0 : move < 120.0 ? 1.0 : 2.0
 
@@ -174,8 +174,9 @@ else
 plot(fastEMA, color = color.aqua,   title = 'Fast EMA')
 plot(slowEMA, color = color.orange, title = 'Slow EMA')
 
-bgcolor(tUp ? color.new(color.green, 92) :
-       tDown ? color.new(color.red,   92) : na)
+bgcolor(
+     tUp   ? color.new(color.green, 92) :
+     tDown ? color.new(color.red,   92) : na)
 
 // BUY+ (강한 매수)
 plotshape(strongBuy,
@@ -254,12 +255,13 @@ if barstate.islast
     table.cell(dash, 0, 8, assetName + ' Signal')
     table.cell(dash, 1, 8, tSignal, bgcolor = color.new(color.blue, 60))
 
-/// 초선행 컴포넌트 요약 문자열 생성
-compEarly := 'PCR '  + str.tostring(pcrScore, '#.0') +
-             ' / MOVE ' + str.tostring(moveScore, '#.0') +
-             ' / VVIX ' + str.tostring(vvixScore, '#.0') +
-             ' / CR '   + str.tostring(spreadScore, '#.0') +
-             ' / VIXΔ ' + str.tostring(volScore, '#.0')
-             
-table.cell(dash, 0, 9, 'Early Components')
-table.cell(dash, 1, 9, compEarly)
+    // 초선행 컴포넌트 요약 문자열 생성
+    compEarly := 'PCR '  + str.tostring(pcrScore, '#.0') +
+                 ' / MOVE ' + str.tostring(moveScore, '#.0') +
+                 ' / VVIX ' + str.tostring(vvixScore, '#.0') +
+                 ' / CR '   + str.tostring(spreadScore, '#.0') +
+                 ' / VIXΔ ' + str.tostring(volScore, '#.0')
+
+    // 테이블에 표시
+    table.cell(dash, 0, 9, 'Early Components')
+    table.cell(dash, 1, 9, compEarly)
