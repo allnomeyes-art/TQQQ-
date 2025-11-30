@@ -1,0 +1,123 @@
+//@version=6
+indicator('GPT Market Navigator v2 (Any Symbol + Signals)', overlay = true)
+
+// ───────────────────────────────
+// 1. 심볼 입력
+// ───────────────────────────────
+/// 메인 심볼: 현재 차트
+symMain = syminfo.tickerid
+// 보조 심볼 입력
+symQQQ = input.symbol('NASDAQ:QQQ', 'QQQ (벤치마크)')
+symVIX = input.symbol('CBOE:VIX', 'VIX')
+symHYG = input.symbol('AMEX:HYG', 'HYG (High Yield)')
+symLQD = input.symbol('AMEX:LQD', 'LQD (IG Credit)')
+
+// 현재 차트 타임프레임 데이터 (1번만 선언!!!)
+tClose = request.security(symMain, timeframe.period, close)
+qClose = request.security(symQQQ, timeframe.period, close)
+vix = request.security(symVIX, timeframe.period, close)
+hyg = request.security(symHYG, timeframe.period, close)
+lqd = request.security(symLQD, timeframe.period, close)
+
+// 현재 심볼 이름 표시용
+assetName = syminfo.ticker
+// ───────────────────────────────
+// 2. Market Crash Score (0~10점 → 0~100%)
+// ───────────────────────────────
+
+// (1) VIX Gap (VIX / 50MA)
+vixMa = ta.sma(vix, 50)
+vixGap = vixMa == 0.0 ? 1.0 : vix / vixMa
+vixScore = vixGap < 1.10 ? 0.0 : vixGap < 1.30 ? 1.0 : 2.0
+
+// (2) HYG / LQD 신용 스프레드
+spread = (hyg / lqd - 1.0) * 100.0
+spreadScore = spread > -1 ? 0.0 : spread > -3 ? 1.0 : 2.0
+
+// (3) 메인 심볼 30일 드로다운
+ddLen = input.int(30, '드로다운 기간 (메인 심볼 기준)')
+hh = ta.highest(tClose, ddLen)
+drawdown = (tClose - hh) / hh * 100.0
+ddScore = drawdown > -10 ? 0.0 : drawdown > -25 ? 1.0 : 2.0
+
+// (4) QQQ 50EMA 기울기
+qqEma = ta.ema(qClose, 50)
+qqSlope = qqEma - qqEma[1]
+trendScore = qqSlope > 0 ? 0.0 : qqSlope > qqEma * -0.001 ? 1.0 : 2.0
+
+// (5) VIX 변화율
+vixChange = (vix - vix[3]) / vix[3] * 100.0
+volScore = vixChange < 10 ? 0.0 : vixChange < 30 ? 1.0 : 2.0
+
+// 총점 → Crash %
+totalScore = vixScore + spreadScore + ddScore + trendScore + volScore
+crashProb = math.min(totalScore / 10.0 * 100.0, 100.0)
+
+// Regime
+string regime = crashProb < 30 ? 'GREEN (Risk-On)' : crashProb < 60 ? 'YELLOW (Neutral)' : 'RED (Risk-Off)'
+
+color regimeColor = crashProb < 30 ? color.new(color.green, 0) : crashProb < 60 ? color.new(color.orange, 0) : color.new(color.red, 0)
+
+// ───────────────────────────────
+// 3. 메인 심볼 추세 & 매수/매도 신호
+// ───────────────────────────────
+fastLen = input.int(10, 'Fast EMA (메인 심볼)')
+slowLen = input.int(30, 'Slow EMA (메인 심볼)')
+
+fastEMA = ta.ema(tClose, fastLen)
+slowEMA = ta.ema(tClose, slowLen)
+
+tUp = fastEMA > slowEMA
+tDown = fastEMA < slowEMA
+
+strongBuy = ta.crossover(fastEMA, slowEMA) and crashProb < 30
+buySignal = ta.crossover(fastEMA, slowEMA) and crashProb < 60
+sellSignal = ta.crossunder(fastEMA, slowEMA) or tDown and crashProb >= 60
+
+// 시그널 텍스트 (테이블에서 안 깨지도록 약간 짧게)
+string tSignal = strongBuy ? 'RISK ON (강한 매수)' : buySignal ? 'LIGHT LONG (분할진입)' : sellSignal ? 'RISK OFF (방어/매도)' : 'NEUTRAL / 대기'
+
+// ───────────────────────────────
+// 4. 시각화: EMA + 배경 + 화살표
+// ───────────────────────────────
+plot(fastEMA, color = color.aqua, title = 'Fast EMA')
+plot(slowEMA, color = color.orange, title = 'Slow EMA')
+
+bgcolor(tUp ? color.new(color.green, 92) : tDown ? color.new(color.red, 92) : na)
+
+plotshape(strongBuy, title = 'Strong Buy', style = shape.triangleup, location = location.belowbar, color = color.lime, size = size.large, text = 'BUY+')
+
+// BUY (일반 매수)
+plotshape(buySignal and not strongBuy, title = 'Buy', style = shape.triangleup, location = location.belowbar, color = color.green, size = size.small, text = 'BUY')
+
+// SELL (매도)
+plotshape(sellSignal, title = 'Sell', style = shape.triangledown, location = location.abovebar, color = color.red, size = size.small, text = 'SELL')
+
+// Crash% 라인
+plot(crashProb, title = 'Crash Probability %', color = regimeColor, linewidth = 2)
+
+// ───────────────────────────────
+// 5. 대시보드 테이블
+// ───────────────────────────────
+var table dash = table.new(position.top_right, 2, 5, border_width = 1)
+
+if barstate.islast
+    // 헤더
+    table.cell(dash, 0, 0, 'Metric')
+    table.cell(dash, 1, 0, 'Value')
+
+    // Regime
+    table.cell(dash, 0, 1, 'Regime')
+    table.cell(dash, 1, 1, regime, bgcolor = regimeColor)
+
+    // Crash %
+    table.cell(dash, 0, 2, 'Crash %')
+    table.cell(dash, 1, 2, str.tostring(crashProb, '#.0') + '%', text_color = regimeColor)
+
+    // 메인 심볼 Trend
+    table.cell(dash, 0, 3, assetName + ' Trend')
+    table.cell(dash, 1, 3, tUp ? 'UP' : tDown ? 'DOWN' : 'FLAT')
+
+    // 메인 심볼 Signal
+    table.cell(dash, 0, 4, assetName + ' Signal')
+    table.cell(dash, 1, 4, tSignal, bgcolor = color.new(color.blue, 60))
