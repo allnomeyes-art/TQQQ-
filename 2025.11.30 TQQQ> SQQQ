@@ -1,0 +1,91 @@
+//@version=5
+indicator("Flow Regime (TQQQ/SQQQ + SOXL/SOXS + SPXL/SPXS)", overlay = true, max_labels_count = 500)
+
+//──────────────────────────────
+// 1. 심볼 설정
+//──────────────────────────────
+symTQQQ = input.symbol("NASDAQ:TQQQ", "TQQQ (3X Long Nasdaq)")
+symSQQQ = input.symbol("NASDAQ:SQQQ", "SQQQ (3X Short Nasdaq)")
+
+symSOXL = input.symbol("AMEX:SOXL", "SOXL (3X Long Semi)")
+symSOXS = input.symbol("AMEX:SOXS", "SOXS (3X Short Semi)")
+
+symSPXL = input.symbol("AMEX:SPXL", "SPXL (3X Long S&P500)")
+symSPXS = input.symbol("AMEX:SPXS", "SPXS (3X Short S&P500)")
+
+//──────────────────────────────
+// 2. 거래량 불러오기
+//──────────────────────────────
+tVolLong  = request.security(symTQQQ, timeframe.period, volume)
+tVolShort = request.security(symSQQQ, timeframe.period, volume)
+
+sVolLong  = request.security(symSOXL, timeframe.period, volume)
+sVolShort = request.security(symSOXS, timeframe.period, volume)
+
+pVolLong  = request.security(symSPXL, timeframe.period, volume)
+pVolShort = request.security(symSPXS, timeframe.period, volume)
+
+// 비율 (참고용)
+tRatio = tVolLong / tVolShort
+sRatio = sVolLong / sVolShort
+pRatio = pVolLong / pVolShort
+
+//──────────────────────────────
+// 3. 방향성 판정
+//──────────────────────────────
+bullNasdaq = tVolLong > tVolShort
+bearNasdaq = tVolLong < tVolShort
+
+bullSemi   = sVolLong > sVolShort
+bearSemi   = sVolLong < sVolShort
+
+bullSPX    = pVolLong > pVolShort
+bearSPX    = pVolLong < pVolShort
+
+// 3개 모두 롱 우위 = 강 상승
+regimeBull = bullNasdaq and bullSemi and bullSPX
+// 3개 모두 숏 우위 = 강 하락
+regimeBear = bearNasdaq and bearSemi and bearSPX
+
+// 직전 상태
+regimeBullPrev = regimeBull[1]
+regimeBearPrev = regimeBear[1]
+
+// 상태 전환 시그널
+bullSignal = regimeBull and not regimeBullPrev   // 숏 → 롱
+bearSignal = regimeBear and not regimeBearPrev   // 롱 → 숏
+
+//──────────────────────────────
+// 4. 차트 표시 (배경 + 화살표)
+//──────────────────────────────
+bgcolor(regimeBull ? color.new(color.green, 87) : regimeBear ? color.new(color.red, 87) : na)
+
+// 4. 차트 표시 (배경 + 화살표)
+bgcolor(regimeBull ? color.new(color.green, 87) : regimeBear ? color.new(color.red, 87) : na)
+
+// 매수/상승 레짐 진입 신호 (BUY)
+plotshape(bullSignal,
+     title    = "BUY Regime (TQQQ, SOXL, SPXL 롱 우위)",
+     style    = shape.triangleup,
+     location = location.belowbar,
+     color    = color.lime,
+     size     = size.large,
+     text     = "BUY")
+
+// 매도/하락 레짐 진입 신호 (SELL / SHORT)
+plotshape(bearSignal,
+     title    = "SELL Regime (SQQQ, SOXS, SPXS 숏 우위)",
+     style    = shape.triangledown,
+     location = location.abovebar,
+     color    = color.red,
+     size     = size.large,
+     text     = "SELL")
+
+
+//──────────────────────────────
+// 5. 비율 플롯 (옵션)
+//──────────────────────────────
+plot(tRatio, title = "TQQQ/SQQQ Vol Ratio", color = color.new(color.aqua, 0), linewidth = 1)
+plot(sRatio, title = "SOXL/SOXS Vol Ratio", color = color.new(color.orange, 0), linewidth = 1)
+plot(pRatio, title = "SPXL/SPXS Vol Ratio", color = color.new(color.yellow, 0), linewidth = 1)
+hline(1.0, "Long = Short", color = color.new(color.gray, 60))
