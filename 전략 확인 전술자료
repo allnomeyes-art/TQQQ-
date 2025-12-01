@@ -1,0 +1,122 @@
+//@version=6
+strategy("GPT Market Navigator v2 STRATEGY (Any Symbol + Signals)", overlay = true, initial_capital = 100000, default_qty_type = strategy.percent_of_equity, default_qty_value = 100, commission_type = strategy.commission.percent, commission_value = 0.01)
+
+// ───────────────────────────────
+// 1. 심볼 입력
+// ───────────────────────────────
+/// 메인 심볼: 현재 차트
+symMain = syminfo.tickerid
+// 보조 심볼 입력
+symQQQ = input.symbol('NASDAQ:QQQ', 'QQQ (벤치마크)')
+symVIX = input.symbol('CBOE:VIX', 'VIX')
+symHYG = input.symbol('AMEX:HYG', 'HYG (High Yield)')
+symLQD = input.symbol('AMEX:LQD', 'LQD (IG Credit)')
+
+// 현재 차트 타임프레임 데이터 (1번만 선언)
+tClose = request.security(symMain, timeframe.period, close)
+qClose = request.security(symQQQ, timeframe.period, close)
+vix    = request.security(symVIX, timeframe.period, close)
+hyg    = request.security(symHYG, timeframe.period, close)
+lqd    = request.security(symLQD, timeframe.period, close)
+
+// 현재 심볼 이름 표시용
+assetName = syminfo.ticker
+
+// ───────────────────────────────
+// 2. Market Crash Score (0~10점 → 0~100%)
+// ───────────────────────────────
+
+// (1) VIX Gap (VIX / 50MA)
+vixMa    = ta.sma(vix, 50)
+vixGap   = vixMa == 0.0 ? 1.0 : vix / vixMa
+vixScore = vixGap < 1.10 ? 0.0 : vixGap < 1.30 ? 1.0 : 2.0
+
+// (2) HYG / LQD 신용 스프레드
+spread      = (hyg / lqd - 1.0) * 100.0
+spreadScore = spread > -1 ? 0.0 : spread > -3 ? 1.0 : 2.0
+
+// (3) 메인 심볼 30일 드로다운
+ddLen    = input.int(30, '드로다운 기간 (메인 심볼 기준)')
+hh       = ta.highest(tClose, ddLen)
+drawdown = (tClose - hh) / hh * 100.0
+ddScore  = drawdown > -10 ? 0.0 : drawdown > -25 ? 1.0 : 2.0
+
+// (4) QQQ 50EMA 기울기
+qqEma      = ta.ema(qClose, 50)
+qqSlope    = qqEma - qqEma[1]
+trendScore = qqSlope > 0 ? 0.0 : qqSlope > qqEma * -0.001 ? 1.0 : 2.0
+
+// (5) VIX 변화율
+vixChange = (vix - vix[3]) / vix[3] * 100.0
+volScore  = vixChange < 10 ? 0.0 : vixChange < 30 ? 1.0 : 2.0
+
+// 총점 → Crash %
+totalScore = vixScore + spreadScore + ddScore + trendScore + volScore
+crashProb  = math.min(totalScore / 10.0 * 100.0, 100.0)
+
+// Regime (참고용)
+string regime = crashProb < 30 ? 'GREEN (Risk-On)' : crashProb < 60 ? 'YELLOW (Neutral)' : 'RED (Risk-Off)'
+color regimeColor = crashProb < 30 ? color.new(color.green, 0) : crashProb < 60 ? color.new(color.orange, 0) : color.new(color.red, 0)
+
+// ───────────────────────────────
+// 3. 메인 심볼 추세 & 시그널
+// ───────────────────────────────
+fastLen = input.int(10, 'Fast EMA (메인 심볼)')
+slowLen = input.int(30, 'Slow EMA (메인 심볼)')
+
+fastEMA = ta.ema(tClose, fastLen)
+slowEMA = ta.ema(tClose, slowLen)
+
+tUp   = fastEMA > slowEMA
+tDown = fastEMA < slowEMA
+
+// ───────────────────────────────
+// 3-1. Crash% 기반 BUY 필터 (개선 버전)
+// ───────────────────────────────
+lookbackCrash = input.int(7, 'Crash 저점 확인 기간', minval = 2)
+lowestCrash   = ta.lowest(crashProb, lookbackCrash)
+
+// 여유 1포인트 허용 (0.5~2.0 사이 튜닝 가능)
+isCrashLow    = crashProb <= lowestCrash + 1.0
+
+// Crash%가 "급하게" 위로 튀어오르면 매수 금지 (5포인트 이상 점프)
+isCrashRising = crashProb - crashProb[1] > 5.0
+
+// ───────────────────────────────
+// 3-2. 최종 시그널 (BUY+ / RISK)
+// ───────────────────────────────
+strongBuy = ta.crossover(fastEMA, slowEMA) and crashProb < 35 and isCrashLow and not isCrashRising
+sellSignal = (ta.crossunder(fastEMA, slowEMA) or tDown) and crashProb >= 60
+
+// 시그널 텍스트 (대시보드용으로 원하면 나중에 추가)
+string tSignal = strongBuy ? 'RISK ON (강한 매수)' :
+     sellSignal ? 'RISK OFF (방어/매도)' :
+     'NEUTRAL / 대기'
+
+// ───────────────────────────────
+// 4. 전략 진입/청산 로직
+// ───────────────────────────────
+
+// 롱 진입: BUY+ 시그널, 현재 포지션 없을 때
+if strongBuy and strategy.position_size == 0
+    strategy.entry('Long', strategy.long)
+
+// 롱 청산: RISK 시그널, 현재 롱 포지션 있을 때
+if sellSignal and strategy.position_size > 0
+    strategy.close('Long')
+
+// ───────────────────────────────
+// 5. 시각화: EMA + 배경 + 화살표
+// ───────────────────────────────
+plot(fastEMA, color = color.aqua,   title = 'Fast EMA')
+plot(slowEMA, color = color.orange, title = 'Slow EMA')
+
+bgcolor(tUp ? color.new(color.green, 92) : tDown ? color.new(color.red, 92) : na)
+
+// Strong BUY (BUY+만 표시)
+plotshape(strongBuy, title='Strong Buy', style=shape.triangleup,
+     location=location.belowbar, color=color.lime, size=size.large, text='BUY+')
+
+// RISK (매도)
+plotshape(sellSignal, title='Risk', style=shape.triangledown,
+     location=location.abovebar, color=color.red, size=size.small, text='RISK')
